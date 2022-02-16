@@ -1,0 +1,150 @@
+---
+title: "Medical insurance charges: Random forest model"
+author: "Jeewoen Shin"
+date: "02/16/2022"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+## setup
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_knit$set(root.dir="...")
+
+library(tidyverse) # tidyverse includes dplyr
+library(gtsummary)
+library(ranger)
+library(ggplot2)
+library(corrplot)
+```
+
+# Load input data and check missing data
+```{r, results="hide"} 
+insurance.data.full = readr::read_csv("data/insurance.csv", 
+                              col_types = cols( age = col_integer(),
+                              sex = col_factor(),
+                              bmi = col_double(),
+                              children = col_integer(),
+                              smoker = col_factor(),
+                              region = col_factor(),
+                              charges = col_double()
+));
+
+# check missing data
+sum(is.na(insurance.data.full))
+# view raw data
+insurance.data.full %>% tbl_summary() # reporting the median and IQR
+insurance.data.full %>% tbl_summary(statistic = list(all_continuous() ~ "{mean} ({sd})")) 
+# reporting mean and SD 
+
+insurance.data <- insurance.data.full %>% mutate(id = row_number()) # person id
+```
+
+# Split into training and test set
+```{r, results="hide"} 
+set.seed(0)
+
+# split training & test set
+training_set = insurance.data %>% sample_frac(0.75)
+test_set = anti_join(insurance.data, training_set, by='id')
+
+training_set = training_set %>% select(-"id")
+test_set = test_set %>% select(-"id")
+```
+
+# Build random forest model (ranger)
+```{r, results="hide"} 
+set.seed(1)
+# importance = permutation: 
+rf.model.permutation <- ranger(charges ~ ., data = training_set, 
+                               importance = "permutation", mtry=3)
+
+if(FALSE){ #importance = impurity: variance of the responses for regression 
+  rf.model.impurity <- ranger(cases ~ ., data = training_set, 
+                              importance = "impurity", mtry=3)
+}
+``` 
+Note: mtry = the number of variables randomly sampled as candidates at each split. Default: floor(# variables/3) which is 2. Increase mtry to 3 instead of 2.
+
+## Print R squared and MSE
+```{r, tidy = TRUE} 
+print(rf.model.permutation)
+#print(rf.model.impurity)
+```
+## Print variable importance
+```{r, tidy = TRUE}
+rf.model.permutation$variable.importance
+#rf.model.impurity$variable.importance
+```
+## Plot variable importance
+```{r, tidy = TRUE} 
+varImportance.permutation = data.frame(Variables = names(rf.model.permutation$variable.importance), 
+                                    Importance =round(rf.model.permutation$variable.importance,2))
+
+rankImportance.permutation=varImportance.permutation%>%mutate(Rank=paste('#',dense_rank(desc(Importance))))
+
+ggplot(rankImportance.permutation,aes(x=reorder(Variables,Importance),
+                                   y=Importance,fill=Importance))+ 
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+            hjust=0, vjust=0.55, size = 4, colour = 'red') +
+  labs(x = 'Variables') +
+  coord_flip() + 
+  theme_classic()
+```
+```{r, include=FALSE}
+if(FALSE){
+  varImportance.impurity = data.frame(Variables = names(rf.model.impurity$variable.importance), 
+                             Importance =round(rf.model.impurity$variable.importance,2))
+  
+  rankImportance.impurity=varImportance.impurity%>%mutate(Rank=paste('#',dense_rank(desc(Importance))))
+  
+  ggplot(rankImportance.impurity,aes(x=reorder(Variables,Importance),
+                            y=Importance,fill=Importance))+ 
+    geom_bar(stat='identity') + 
+    geom_text(aes(x = Variables, y = 0.5, label = Rank),
+              hjust=0, vjust=0.55, size = 4, colour = 'red') +
+    labs(x = 'Variables') +
+    coord_flip() + 
+    theme_classic()
+}
+```
+## Model accuracy, Goodness-of-fit 
+```{r, tidy = TRUE}
+training_set$predicted.rf.permutation <- predict(rf.model.permutation, dat = training_set)$predictions
+
+test_set$predicted.rf.permutation <- predict(rf.model.permutation, dat = test_set)$predictions
+
+# calculate root-mean-square deviation
+rmse <- function(actual, estimate) {
+  rmse = sqrt(sum((actual - estimate)^2) / length(actual))
+  return(rmse)
+}
+
+print(rmse(training_set$charges, training_set$predicted.rf.permutation)) # training set
+print(rmse(test_set$charges, test_set$predicted.rf.permutation)) # test set 
+
+if(FALSE){ # impurity
+  training_set$predicted.rf.impurity <- predict(rf.model.impurity, dat = training_set)$predictions
+  sum((training_set$charges - training_set$predicted.rf.impurity)^2) / nrow(training_set)
+  
+  test_set$predicted.rf.impurity <- predict(rf.model.impurity, dat = test_set)$predictions
+  sum((test_set$charges - test_set$predicted.rf.impurity)^2) / nrow(test_set)
+}
+```
+
+# Plot charges and predicted charges
+```{r, tidy = TRUE}
+par(mfrow=c(1,2))
+plot(training_set$charges ~ training_set$predicted.rf.permutation, asp=1, pch=20, xlab="Fitted charges", ylab="Actual charges", xlim=c(0,65000), ylim=c(0,65000), main="Training set")
+grid()
+abline(0,1)
+
+plot(test_set$charges ~ test_set$predicted.rf.permutation, asp=1, pch=20, xlab="Fitted charges", ylab="Actual charges", xlim=c(0,65000), ylim=c(0,65000), main="Test set")
+grid()
+abline(0,1)
+
+```
